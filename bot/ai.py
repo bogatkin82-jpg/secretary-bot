@@ -1,14 +1,17 @@
-"""Всё общение с нейросетью (GigaChat, YandexGPT или Claude)."""
+"""Всё общение с нейросетью: локальная модель (если есть) + GigaChat, YandexGPT или Claude."""
 import json
 import logging
 import re
 from datetime import datetime
 
-from . import config
+from . import config, local_llm
 
 log = logging.getLogger(__name__)
 
-if config.LLM_PROVIDER == "gigachat":
+client = None
+if config.LLM_PROVIDER == "local":
+    pass    # только локальная модель, облачной нет
+elif config.LLM_PROVIDER == "gigachat":
     from .gigachat import GigaChat
 
     client = GigaChat(config.GIGACHAT_AUTH_KEY, config.GIGACHAT_SCOPE)
@@ -82,6 +85,34 @@ def _normalize_tasks(raw) -> list[dict]:
 
 
 async def _ask(system: str, user: str, model: str, max_tokens: int = 1024) -> str:
+    # 1) локальная модель, если включена и не падала последние минуты
+    if local_llm.available_now() or (config.LLM_PROVIDER == "local" and local_llm.enabled()):
+        try:
+            return await local_llm.chat(system, user, max_tokens)
+        except Exception as e:
+            local_llm.mark_down(f"{type(e).__name__}: {e}"[:200])
+            if config.LLM_PROVIDER == "local":
+                raise
+    # 2) облачная нейросеть
+    local_llm.state["last"] = config.LLM_PROVIDER
+    return await _ask_cloud(system, user, model, max_tokens)
+
+
+async def _ask_json(system: str, user: str, model: str, max_tokens: int = 1024) -> dict:
+    """Запрос, ответ на который должен быть JSON. Если локальная модель ответила
+    не по формату — переспрашиваем облачную (когда она есть)."""
+    text = await _ask(system, user, model, max_tokens)
+    try:
+        return _extract_json(text)
+    except ValueError:
+        if local_llm.state["last"] != "local" or config.LLM_PROVIDER == "local":
+            raise
+        log.warning("Локальная модель ответила не JSON — переспрашиваю %s", config.LLM_PROVIDER)
+        local_llm.state["last"] = config.LLM_PROVIDER
+        return _extract_json(await _ask_cloud(system, user, model, max_tokens))
+
+
+async def _ask_cloud(system: str, user: str, model: str, max_tokens: int) -> str:
     if config.LLM_PROVIDER == "gigachat":
         return await client.chat(model=model, system=system, user=user, max_tokens=max_tokens)
     if config.LLM_PROVIDER == "yandex":
@@ -203,8 +234,7 @@ async def analyze_chat(*, chat_title: str, history_rows, new_ids: set[int], want
         reply_rule=reply_rule,
         open_tasks="\n".join(f"- {t}" for t in open_tasks[:40]) or "(нет)",
     )
-    text = await _ask(system, format_history(history_rows, new_ids), config.LLM_MODEL)
-    raw = _extract_json(text)
+    raw = await _ask_json(system, format_history(history_rows, new_ids), config.LLM_MODEL)
     importance = str(raw.get("importance") or "normal").strip().lower()
     return {
         "importance": importance if importance in ("low", "normal", "high") else "normal",
@@ -267,14 +297,14 @@ def _tz() -> str:
 
 async def parse_task(text: str) -> dict:
     system = PARSE_TASK_SYSTEM.format(now=_now_str(), tz=_tz(), rules=DUE_RULES.format(tz=_tz()))
-    data = _extract_json(await _ask(system, text, config.LLM_MODEL, 300))
+    data = (await _ask_json(system, text, config.LLM_MODEL, 300))
     return {"text": _clean_str(data.get("text")) or text, "due": _clean_str(data.get("due"))}
 
 
 async def parse_when(text: str) -> float | None:
     """«завтра в 15», «в пятницу», «через 2 часа» -> unix-время."""
     system = PARSE_WHEN_SYSTEM.format(now=_now_str(), rules=DUE_RULES.format(tz=_tz()))
-    data = _extract_json(await _ask(system, text, config.LLM_MODEL, 100))
+    data = (await _ask_json(system, text, config.LLM_MODEL, 100))
     return parse_due(_clean_str(data.get("due")))
 
 
@@ -307,7 +337,7 @@ note — коротко, что сообщать собеседникам, от 
 
 async def parse_away(text: str) -> dict:
     system = PARSE_AWAY_SYSTEM.format(now=_now_str(), rules=DUE_RULES.format(tz=_tz()))
-    data = _extract_json(await _ask(system, text, config.LLM_MODEL, 200))
+    data = (await _ask_json(system, text, config.LLM_MODEL, 200))
     return {"until": parse_due(_clean_str(data.get("until"))), "note": _clean_str(data.get("note")) or ""}
 
 
@@ -328,7 +358,7 @@ ANSWER_SYSTEM = """Ты — личный секретарь. Сейчас {now}
 
 
 async def plan_search(question: str) -> dict:
-    data = _extract_json(await _ask(PLAN_SEARCH_SYSTEM.format(now=_now_str()), question,
+    data = (await _ask_json(PLAN_SEARCH_SYSTEM.format(now=_now_str()), question,
                                     config.LLM_MODEL, 200))
     try:
         days = max(1, min(90, int(data.get("days") or 14)))

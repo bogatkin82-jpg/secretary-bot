@@ -81,8 +81,22 @@ async def _status() -> str:
         f"Голосовые: {'расшифровываю' if await db.get('voice') == 'on' else 'выкл'}",
         f"Фактов для ответов: {len(await db.facts())} (/faq)",
         f"Как отвечать: {await db.get('persona')}",
+        _llm_status(),
     ]
     return "\n".join(lines)
+
+
+def _llm_status() -> str:
+    from . import local_llm
+    cloud = {"gigachat": "GigaChat", "yandex": "YandexGPT", "claude": "Claude", "local": ""}[config.LLM_PROVIDER]
+    if not local_llm.enabled():
+        return f"Нейросеть: {cloud}"
+    if local_llm.available_now():
+        ok = local_llm.state["last_ok_ts"]
+        when = f", последний ответ {fmt_ts(ok)}" if ok else ""
+        return f"Нейросеть: 💻 локальная ({config.LOCAL_LLM_MODEL}){when}" + (f", запасная — {cloud}" if cloud else "")
+    return (f"Нейросеть: 💻 локальная сейчас недоступна → работаю через {cloud or '—'}"
+            f" (проверю снова через {config.LOCAL_LLM_RETRY_MINUTES} мин)")
 
 
 def _settings_kb():

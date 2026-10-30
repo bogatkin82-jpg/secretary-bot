@@ -3,5 +3,7 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    # сеть сервера напрямую — так бот видит компьютеры в Tailscale (локальная модель)
+    network_mode: host
     volumes:
       - ./data:/app/data

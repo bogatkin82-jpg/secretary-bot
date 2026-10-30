@@ -26,9 +26,17 @@ GIGACHAT_VERIFY_SSL = os.getenv("GIGACHAT_VERIFY_SSL", "true").lower() != "false
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "").strip()
 YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID", "").strip()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+# Локальная модель (Ollama, LM Studio и т.п. — любой OpenAI-совместимый адрес).
+# Если задана — бот сначала спрашивает её, а облачную нейросеть использует как запасную,
+# пока локальная недоступна (например, ноутбук закрыт).
+LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "").strip().rstrip("/")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen3.5:9b").strip()
+LOCAL_LLM_TIMEOUT = int(os.getenv("LOCAL_LLM_TIMEOUT", "180"))
+LOCAL_LLM_RETRY_MINUTES = int(os.getenv("LOCAL_LLM_RETRY_MINUTES", "5"))
+
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").strip().lower() or (
     "gigachat" if GIGACHAT_AUTH_KEY else "yandex" if YANDEX_API_KEY
-    else "claude" if ANTHROPIC_API_KEY else "")
+    else "claude" if ANTHROPIC_API_KEY else "local" if LOCAL_LLM_URL else "")
 
 # LLM_MODEL — быстрая модель для разбора каждого сообщения и автоответов,
 # SUMMARY_MODEL — более сильная, для сводок.
@@ -47,8 +55,13 @@ elif LLM_PROVIDER == "claude":
         raise SystemExit("Для Claude нужен ANTHROPIC_API_KEY (см. .env.example)")
     LLM_MODEL = os.getenv("LLM_MODEL") or os.getenv("CLAUDE_MODEL", "claude-haiku-5-5")
     SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "claude-sonnet-5-5")
+elif LLM_PROVIDER == "local":
+    if not LOCAL_LLM_URL:
+        raise SystemExit("Для локальной модели нужен LOCAL_LLM_URL (см. .env.example)")
+    LLM_MODEL = SUMMARY_MODEL = LOCAL_LLM_MODEL
 else:
-    raise SystemExit("Укажите ключ нейросети: GIGACHAT_AUTH_KEY, YANDEX_API_KEY или ANTHROPIC_API_KEY")
+    raise SystemExit("Укажите нейросеть: GIGACHAT_AUTH_KEY, YANDEX_API_KEY, ANTHROPIC_API_KEY "
+                     "или LOCAL_LLM_URL")
 
 # Модель для расшифровки голосовых (GigaChat принимает аудиофайлы)
 VOICE_MODEL = os.getenv("VOICE_MODEL", "GigaChat-2-Pro")
