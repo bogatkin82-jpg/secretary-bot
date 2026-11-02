@@ -35,8 +35,11 @@ WMO = {0: "☀️ ясно", 1: "🌤 малооблачно", 2: "⛅️ пер
        95: "⛈ гроза", 96: "⛈ гроза с градом", 99: "⛈ гроза с градом"}
 
 
+UA = {"User-Agent": "secretary-bot/1.0 github.com/bogatkin82-jpg/secretary-bot"}
+
+
 async def _get_json(url: str, params: dict) -> dict:
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), headers=UA) as s:
         async with s.get(url, params=params) as r:
             r.raise_for_status()
             return await r.json(content_type=None)
@@ -53,11 +56,7 @@ async def geocode(name: str) -> dict | None:
             "lat": res["latitude"], "lon": res["longitude"]}
 
 
-async def weather_text() -> str | None:
-    """Строка погоды на сегодня для утреннего плана, или None, если город не задан."""
-    lat, lon, city = await db.get("city_lat"), await db.get("city_lon"), await db.get("city_name")
-    if not (lat and lon):
-        return None
+async def _open_meteo(lat: str, lon: str) -> dict:
     data = await _get_json("https://api.open-meteo.com/v1/forecast", {
         "latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 1,
         "current": "temperature_2m,weather_code",
@@ -65,19 +64,73 @@ async def weather_text() -> str | None:
                  "precipitation_probability_max,wind_speed_10m_max",
     })
     d, c = data["daily"], data.get("current") or {}
-    desc = WMO.get(int(d["weather_code"][0]), "🌡")
-    tmin, tmax = round(d["temperature_2m_min"][0]), round(d["temperature_2m_max"][0])
-    parts = [f"{desc}, {tmin:+d}…{tmax:+d}°"]
-    if c.get("temperature_2m") is not None:
-        parts.append(f"сейчас {round(c['temperature_2m']):+d}°")
-    rain = d.get("precipitation_probability_max", [None])[0]
-    if rain:
-        parts.append(f"осадки {rain}%")
     wind = d.get("wind_speed_10m_max", [None])[0]
-    if wind and wind >= 25:   # км/ч
-        parts.append(f"ветер до {round(wind / 3.6)} м/с")
+    return {"desc": WMO.get(int(d["weather_code"][0]), "🌡"),
+            "tmin": d["temperature_2m_min"][0], "tmax": d["temperature_2m_max"][0],
+            "now": c.get("temperature_2m"),
+            "rain": d.get("precipitation_probability_max", [None])[0],
+            "wind": wind / 3.6 if wind else None}      # км/ч -> м/с
+
+
+# запасной источник — норвежский метеоинститут (бесплатно, без ключа)
+MET_SYMBOLS = [("thunder", "⛈ гроза"), ("heavysnow", "❄️ сильный снег"), ("snow", "🌨 снег"),
+               ("sleet", "🌨 мокрый снег"), ("heavyrain", "🌧 сильный дождь"), ("lightrain", "🌧 небольшой дождь"),
+               ("rain", "🌧 дождь"), ("fog", "🌫 туман"), ("cloudy", "☁️ пасмурно"),
+               ("partlycloudy", "⛅️ переменная облачность"), ("fair", "🌤 малооблачно"), ("clearsky", "☀️ ясно")]
+
+
+async def _met_no(lat: str, lon: str) -> dict:
+    data = await _get_json("https://api.met.no/weatherapi/locationforecast/2.0/compact",
+                           {"lat": round(float(lat), 3), "lon": round(float(lon), 3)})
+    series = data["properties"]["timeseries"]
+    today = datetime.now(config.TZ).date()
+    temps, winds, rain_mm, symbols = [], [], 0.0, []
+    for p in series:
+        t = datetime.fromisoformat(p["time"].replace("Z", "+00:00")).astimezone(config.TZ)
+        if t.date() != today:
+            continue
+        det = p["data"]["instant"]["details"]
+        temps.append(det.get("air_temperature"))
+        winds.append(det.get("wind_speed") or 0)
+        nxt = p["data"].get("next_1_hours") or p["data"].get("next_6_hours") or {}
+        rain_mm += (nxt.get("details") or {}).get("precipitation_amount", 0) if "next_1_hours" in p["data"] else 0
+        if nxt.get("summary", {}).get("symbol_code") and 7 <= t.hour <= 21:
+            symbols.append(nxt["summary"]["symbol_code"])
+    if not temps:   # поздний вечер — берём ближайшие часы
+        p = series[0]
+        temps = [p["data"]["instant"]["details"]["air_temperature"]]
+    worst = next((label for key, label in MET_SYMBOLS if any(key in sym for sym in symbols)), "🌡")
+    now = series[0]["data"]["instant"]["details"].get("air_temperature")
+    return {"desc": worst, "tmin": min(temps), "tmax": max(temps), "now": now,
+            "rain": 70 if rain_mm >= 1 else (40 if rain_mm > 0.2 else None),
+            "wind": max(winds) if winds else None}
+
+
+async def weather_text() -> str | None:
+    """Строка погоды на сегодня для утреннего плана, или None, если город не задан."""
+    lat, lon, city = await db.get("city_lat"), await db.get("city_lon"), await db.get("city_name")
+    if not (lat and lon):
+        return None
+    w, errors = None, []
+    for source in (_open_meteo, _open_meteo, _met_no):   # Open-Meteo дважды, затем запасной
+        try:
+            w = await source(lat, lon)
+            break
+        except Exception as e:
+            errors.append(f"{source.__name__}: {e}")
+            log.warning("Погода: %s недоступен: %s", source.__name__, e)
+    if w is None:
+        raise RuntimeError("все источники погоды недоступны")
+    tmin, tmax = round(w["tmin"]), round(w["tmax"])
+    parts = [f"{w['desc']}, {tmin:+d}…{tmax:+d}°"]
+    if w["now"] is not None:
+        parts.append(f"сейчас {round(w['now']):+d}°")
+    if w["rain"]:
+        parts.append(f"осадки {w['rain']}%")
+    if w["wind"] and w["wind"] >= 7:
+        parts.append(f"ветер до {round(w['wind'])} м/с")
     tip = ""
-    if rain and rain >= 50:
+    if w["rain"] and w["rain"] >= 50:
         tip = " — возьмите зонт ☂️"
     elif tmax <= -10:
         tip = " — одевайтесь теплее 🧣"
@@ -94,14 +147,17 @@ async def cmd_city(m: Message, command: CommandObject):
         place = await geocode(command.args.strip())
     except Exception as e:
         log.exception("geocode")
-        return await m.answer(f"⚠️ Сервис погоды недоступен: {e}")
+        return await m.answer("⚠️ Сервис поиска городов сейчас не отвечает, попробуйте чуть позже.")
     if not place:
         return await m.answer("Не нашёл такой город 🤔 Попробуйте написать иначе: /city Санкт-Петербург")
     await db.set("city_name", place["name"])
     await db.set("city_lat", str(place["lat"]))
     await db.set("city_lon", str(place["lon"]))
-    text = await weather_text()
-    await m.answer(f"📍 Город: {place['label']}\nПогода будет в утреннем плане.\n\nСейчас: {text}")
+    try:
+        text = f"Сейчас: {await weather_text()}"
+    except Exception:
+        text = "Прогноз сейчас не загрузился — попробуйте /weather чуть позже."
+    await m.answer(f"📍 Город: {place['label']}\nПогода будет в утреннем плане.\n\n{text}")
 
 
 @router.message(Command("weather"))
@@ -110,7 +166,7 @@ async def cmd_weather(m: Message):
         text = await weather_text()
     except Exception as e:
         log.exception("weather")
-        return await m.answer(f"⚠️ Сервис погоды недоступен: {e}")
+        return await m.answer("⚠️ Сервисы погоды сейчас не отвечают, попробуйте через несколько минут.")
     await m.answer(text or "Сначала укажите город: /city Москва")
 
 
