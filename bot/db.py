@@ -152,6 +152,17 @@ class DB:
             f"UPDATE messages SET processed=1, importance=? WHERE id IN ({q})", (importance, *ids))
         await self.conn.commit()
 
+    async def owner_samples(self, chat_id: int, limit: int = 20) -> list[str]:
+        """Последние сообщения, которые владелец написал САМ: образец его манеры.
+        Сначала из этого чата, затем из остальных."""
+        q = ("SELECT text FROM messages WHERE from_owner=1 AND by_bot=0 AND text NOT LIKE '[%' "
+             "AND LENGTH(text) BETWEEN 2 AND 300 {cond} ORDER BY ts DESC LIMIT ?")
+        async with self.conn.execute(q.format(cond="AND chat_id=?"), (chat_id, limit // 2)) as cur:
+            own = [r["text"] for r in await cur.fetchall()]
+        async with self.conn.execute(q.format(cond="AND chat_id<>?"), (chat_id, limit - len(own))) as cur:
+            other = [r["text"] for r in await cur.fetchall()]
+        return own + other
+
     async def last_owner_activity(self, chat_id: int) -> float:
         """Когда владелец сам (не бот) последний раз писал в чат."""
         async with self.conn.execute(

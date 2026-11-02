@@ -207,6 +207,7 @@ async def process_chat(chat_id: int, conn_id: str, bot: Bot):
         open_tasks=[t["text"] for t in await db.open_tasks()],
         facts=[f["text"] for f in await db.facts()],
         style=await db.style_examples(),
+        owner_samples=await db.owner_samples(chat_id),
         away_note=away["note"] if away else "",
     )
     importance = result["importance"]

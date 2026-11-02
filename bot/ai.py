@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 
 from . import config, local_llm
+from .humanize import humanize
 
 log = logging.getLogger(__name__)
 
@@ -174,13 +175,25 @@ ANALYZE_SYSTEM = """Ты — личный секретарь владельца 
 Верни ТОЛЬКО JSON без пояснений и markdown:
 {{"importance": "low|normal|high", "summary": "одна короткая фраза: чего хочет собеседник", "tasks": [{{"text": "...", "due": "ISO-8601 или null"}}], "events": [{{"title": "...", "start": "ISO-8601", "end": null, "place": null}}], "birthdays": [{{"who": "собеседник", "date": "ДД.ММ"}}], "reply": "текст или null"}}"""
 
-REPLY_RULE_ON = """владелец сейчас не на связи. Напиши короткий ответ собеседнику от имени владельца,
-   от первого лица, на языке собеседника. Указание владельца о стиле ответа: «{persona}».
+REPLY_RULE_ON = """владелец сейчас не на связи. Напиши ответ собеседнику от имени владельца, от первого лица,
+   на языке собеседника. Указание владельца о стиле ответа: «{persona}».
    {away}
+   Ответ должен выглядеть так, будто владелец сам быстро набрал его в телефоне:
+   • коротко: обычно 1 фраза, максимум 2; не длиннее, чем пишет собеседник;
+   • разговорно и просто, как в мессенджере, без канцелярита и вежливых формул поддержки;
+   • запрещены фразы: «Спасибо за ваше сообщение», «Отличный вопрос», «Рад помочь», «Надеюсь, это поможет»,
+     «Если будут вопросы — обращайтесь», «Обязательно», «Конечно!» в начале, «важно отметить», «в целом»;
+   • без списков, без markdown и жирного, без эмодзи (если владелец сам их не ставит), без «ёлочек» и длинного тире —
+     только обычный дефис;
+   • без восклицательных знаков подряд и без точки в конце последней фразы;
+   • без пересказа вопроса собеседника и без итоговых обобщений;
+   • повторяй манеру владельца из его сообщений ниже: длину, регистр букв, пунктуацию, словечки, на «ты»/«вы».
    Жёсткие правила: не выдумывай фактов о владельце; не соглашайся на встречи, сроки, оплату и не давай
-   обещаний — вместо этого скажи, что владелец посмотрит/ответит позже; не упоминай, что ты ИИ или бот,
-   если указание владельца этого не требует. Если ответ не нужен (собеседник попрощался, поблагодарил,
-   прислал стикер, это рассылка) — верни null.
+   обещаний — вместо этого скажи, что посмотришь/ответишь позже; не упоминай ИИ, ботов и секретарей.
+   Если собеседник прямо и всерьёз спрашивает, человек ли ему отвечает или бот, — не отрицай и не подтверждай:
+   верни reply null и importance "high", владелец ответит сам.
+   Если ответ не нужен (собеседник попрощался, поблагодарил, прислал стикер, это рассылка) — верни null.
+   {samples}
    {facts}
    {style}"""
 
@@ -193,6 +206,13 @@ def _facts_block(facts: list[str]) -> str:
     return ("Проверенные факты от владельца — на вопросы о них отвечай по существу, точно, "
             "не меняя цифр и формулировок; чего тут нет — не выдумывай:\n"
             + "\n".join(f"   • {f}" for f in facts[:50]))
+
+
+def _samples_block(samples: list[str]) -> str:
+    if not samples:
+        return ""
+    return ("Так владелец сам пишет в переписке (примеры его сообщений):\n"
+            + "\n".join(f"   «{t}»" for t in samples))
 
 
 def _style_block(examples) -> str:
@@ -234,14 +254,16 @@ def _normalize_events(raw) -> list[dict]:
 
 async def analyze_chat(*, chat_title: str, history_rows, new_ids: set[int], want_reply: bool,
                        persona: str, owner_name: str, open_tasks: list[str],
-                       facts: list[str] = (), style=(), away_note: str = "") -> dict:
+                       facts: list[str] = (), style=(), away_note: str = "",
+                       owner_samples: list[str] = ()) -> dict:
     reply_rule = REPLY_RULE_OFF
     if want_reply:
         reply_rule = REPLY_RULE_ON.format(
             persona=persona,
             away=(f"ВАЖНО: владелец сейчас недоступен — {away_note}. Обязательно сообщи это собеседнику."
                   if away_note else ""),
-            facts=_facts_block(list(facts)), style=_style_block(list(style)))
+            facts=_facts_block(list(facts)), style=_style_block(list(style)),
+            samples=_samples_block(list(owner_samples)))
     system = ANALYZE_SYSTEM.format(
         owner=owner_name or "владелец",
         now=_now_str(),
@@ -257,7 +279,7 @@ async def analyze_chat(*, chat_title: str, history_rows, new_ids: set[int], want
         "tasks": _normalize_tasks(raw.get("tasks")),
         "events": _normalize_events(raw.get("events")),
         "birthdays": _normalize_birthdays(raw.get("birthdays")),
-        "reply": _clean_str(raw.get("reply")) if want_reply else None,
+        "reply": humanize(_clean_str(raw.get("reply")), list(owner_samples)) if want_reply else None,
     }
 
 
