@@ -50,6 +50,20 @@ CREATE TABLE IF NOT EXISTS events(
 
 -- кому уже ответили в режиме «нет на связи» (away_id — метка периода)
 CREATE TABLE IF NOT EXISTS away_replied(chat_id INTEGER PRIMARY KEY, away_id TEXT);
+
+-- список покупок
+CREATE TABLE IF NOT EXISTS shopping(id INTEGER PRIMARY KEY AUTOINCREMENT, item TEXT, created_ts REAL);
+
+-- дни рождения (из переписки, профиля Telegram или добавленные вручную)
+CREATE TABLE IF NOT EXISTS birthdays(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, chat_id INTEGER,
+    month INTEGER, day INTEGER, source TEXT, created_ts REAL);
+
+-- шаблонные ответы: ключевые слова -> готовый текст
+CREATE TABLE IF NOT EXISTS templates(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, keywords TEXT, answer TEXT, created_ts REAL);
+CREATE TABLE IF NOT EXISTS template_sent(chat_id INTEGER, tpl_id INTEGER, ts REAL,
+    PRIMARY KEY(chat_id, tpl_id));
 """
 
 
@@ -325,6 +339,82 @@ class DB:
             args += chat_ids
         async with self.conn.execute(q + " ORDER BY chat_id, ts", args) as cur:
             return await cur.fetchall()
+
+    # ---------- покупки ----------
+    async def add_shopping(self, items: list[str]):
+        now = time.time()
+        await self.conn.executemany("INSERT INTO shopping(item, created_ts) VALUES(?,?)",
+                                    [(i, now) for i in items])
+        await self.conn.commit()
+
+    async def shopping(self):
+        async with self.conn.execute("SELECT * FROM shopping ORDER BY id") as cur:
+            return await cur.fetchall()
+
+    async def delete_shopping(self, item_id: int | None = None):
+        if item_id is None:
+            await self.conn.execute("DELETE FROM shopping")
+        else:
+            await self.conn.execute("DELETE FROM shopping WHERE id=?", (item_id,))
+        await self.conn.commit()
+
+    # ---------- дни рождения ----------
+    async def add_birthday(self, name: str, month: int, day: int, chat_id: int | None,
+                           source: str) -> int | None:
+        """None — такой день рождения уже записан."""
+        async with self.conn.execute(
+            "SELECT id FROM birthdays WHERE month=? AND day=? AND "
+            "((chat_id IS NOT NULL AND chat_id=?) OR LOWER(name)=LOWER(?))",
+            (month, day, chat_id, name)) as cur:
+            if await cur.fetchone():
+                return None
+        cur = await self.conn.execute(
+            "INSERT INTO birthdays(name, chat_id, month, day, source, created_ts) VALUES(?,?,?,?,?,?)",
+            (name, chat_id, month, day, source, time.time()))
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def birthdays(self):
+        async with self.conn.execute("SELECT * FROM birthdays ORDER BY month, day") as cur:
+            return await cur.fetchall()
+
+    async def birthdays_on(self, month: int, day: int):
+        async with self.conn.execute(
+            "SELECT * FROM birthdays WHERE month=? AND day=?", (month, day)) as cur:
+            return await cur.fetchall()
+
+    async def delete_birthday(self, bday_id: int):
+        await self.conn.execute("DELETE FROM birthdays WHERE id=?", (bday_id,))
+        await self.conn.commit()
+
+    # ---------- шаблоны ----------
+    async def add_template(self, keywords: str, answer: str) -> int:
+        cur = await self.conn.execute(
+            "INSERT INTO templates(keywords, answer, created_ts) VALUES(?,?,?)",
+            (keywords, answer, time.time()))
+        await self.conn.commit()
+        return cur.lastrowid
+
+    async def templates(self):
+        async with self.conn.execute("SELECT * FROM templates ORDER BY id") as cur:
+            return await cur.fetchall()
+
+    async def delete_template(self, tpl_id: int):
+        await self.conn.execute("DELETE FROM templates WHERE id=?", (tpl_id,))
+        await self.conn.execute("DELETE FROM template_sent WHERE tpl_id=?", (tpl_id,))
+        await self.conn.commit()
+
+    async def template_sent_ts(self, chat_id: int, tpl_id: int) -> float:
+        async with self.conn.execute(
+            "SELECT ts FROM template_sent WHERE chat_id=? AND tpl_id=?", (chat_id, tpl_id)) as cur:
+            row = await cur.fetchone()
+        return row["ts"] if row else 0.0
+
+    async def mark_template_sent(self, chat_id: int, tpl_id: int):
+        await self.conn.execute(
+            "INSERT INTO template_sent(chat_id, tpl_id, ts) VALUES(?,?,?) "
+            "ON CONFLICT(chat_id, tpl_id) DO UPDATE SET ts=excluded.ts", (chat_id, tpl_id, time.time()))
+        await self.conn.commit()
 
     async def expire_drafts(self, chat_id: int):
         """Владелец сам ответил в чате — старые черновики больше не нужны."""

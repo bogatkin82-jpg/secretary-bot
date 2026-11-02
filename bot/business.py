@@ -6,7 +6,7 @@ import time
 from aiogram import Bot, Router
 from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
 
-from . import ai, config, state, voice
+from . import ai, config, skills, state, voice
 from .db import db
 from .util import (chat_title, contact_kb, draft_kb, event_kb, fmt_ts, message_text, notify,
                    task_kb)
@@ -62,7 +62,10 @@ async def on_message(m: Message, bot: Bot):
     if conn is None:
         return
     title = chat_title(m)
+    is_new_contact = await db.contact(m.chat.id) is None
     await db.upsert_contact(m.chat.id, m.chat.full_name or title, m.chat.username)
+    if is_new_contact:   # новый собеседник — вдруг у него в профиле указан день рождения
+        asyncio.create_task(skills.check_profile_birthday(bot, m.chat.id, m.chat.full_name or title))
     if await db.contact_status(m.chat.id) == "ignore":
         return                                   # «не трогать»: ничего не читаем и не храним
 
@@ -186,6 +189,14 @@ async def process_chat(chat_id: int, conn_id: str, bot: Bot):
     away = await state.away() if mode == "away" else None
     want_reply = await _should_reply(chat_id, new_rows, conn, mode, away)
 
+    # шаблонный ответ: если собеседник спросил то, на что у вас есть готовый текст
+    template = None
+    if want_reply and mode != "away":
+        template = await skills.find_template(
+            chat_id, [r["text"] or "" for r in new_rows if not r["from_owner"]])
+        if template:
+            want_reply = False          # нейросеть ответ не сочиняет — отвечаем шаблоном
+
     result = await ai.analyze_chat(
         chat_title=title,
         history_rows=await db.history(chat_id, config.HISTORY_LIMIT),
@@ -225,8 +236,22 @@ async def process_chat(chat_id: int, conn_id: str, bot: Bot):
         await notify(bot, f"🔴 {star}Важное от «{title}»:\n{result['summary'] or new_rows[-1]['text']}",
                      contact_kb(chat_id, status))
 
-    # 4) ответ
+    # 4) дни рождения из переписки
+    contact_name = (await db.contact(chat_id) or {"name": title})["name"]
+    for b in result["birthdays"]:
+        md = skills.parse_day_month(b["date"])
+        if not md:
+            continue
+        own = b["who"].lower() in ("собеседник", "он", "она", contact_name.lower())
+        await skills.save_birthday(bot, contact_name if own else b["who"], md[0], md[1],
+                                   chat_id if own else None, f"из переписки с «{title}»")
+
+    # 5) ответ
     reply = result["reply"]
+    if template:
+        reply = template["answer"]
+        result["summary"] = f"{result['summary']} · 📋 ответ по шаблону №{template['id']}".strip(" ·")
+        await db.mark_template_sent(chat_id, template["id"])
     if not reply:
         return
     if mode in ("auto", "away"):

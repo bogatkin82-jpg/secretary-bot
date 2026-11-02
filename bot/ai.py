@@ -148,7 +148,7 @@ ANALYZE_SYSTEM = """Ты — личный секретарь владельца 
 Тебе дают переписку владельца с собеседником «{chat}». Реплики помечены [Я] (владелец) и [Собеседник].
 Новые, ещё не разобранные сообщения отмечены звёздочкой *.
 
-Сделай четыре вещи:
+Сделай пять вещей:
 1. importance — важность НОВЫХ сообщений собеседника для владельца:
    "high" — срочно: деньги, проблема, дедлайн сегодня/завтра, просьба срочно связаться;
    "normal" — обычная переписка, на которую стоит ответить;
@@ -163,13 +163,16 @@ ANALYZE_SYSTEM = """Ты — личный секретарь владельца 
    Событие — только если ОБЕ стороны согласились И время названо в переписке явно («в 15:00», «завтра в 7 вечера»).
    Предложение без ответа («давай сегодня встретимся?») — НЕ событие. Время не названо — НЕ событие,
    не подставляй текущее время. В сомнениях — []. Если таких нет — [].
-4. reply — {reply_rule}
+4. birthdays — дни рождения, которые ЯВНО названы в новых сообщениях с датой («у меня ДР 15 марта»,
+   «у Маши день рождения 3 мая»). who — "собеседник", если речь о нём самом, иначе имя человека;
+   date — "ДД.ММ". Без явной даты — не добавляй. Если таких нет — [].
+5. reply — {reply_rule}
 
 Открытые задачи владельца:
 {open_tasks}
 
 Верни ТОЛЬКО JSON без пояснений и markdown:
-{{"importance": "low|normal|high", "summary": "одна короткая фраза: чего хочет собеседник", "tasks": [{{"text": "...", "due": "ISO-8601 или null"}}], "events": [{{"title": "...", "start": "ISO-8601", "end": null, "place": null}}], "reply": "текст или null"}}"""
+{{"importance": "low|normal|high", "summary": "одна короткая фраза: чего хочет собеседник", "tasks": [{{"text": "...", "due": "ISO-8601 или null"}}], "events": [{{"title": "...", "start": "ISO-8601", "end": null, "place": null}}], "birthdays": [{{"who": "собеседник", "date": "ДД.ММ"}}], "reply": "текст или null"}}"""
 
 REPLY_RULE_ON = """владелец сейчас не на связи. Напиши короткий ответ собеседнику от имени владельца,
    от первого лица, на языке собеседника. Указание владельца о стиле ответа: «{persona}».
@@ -199,6 +202,18 @@ def _style_block(examples) -> str:
     for e in examples:
         lines.append(f"   было: {e['draft'][:300]}\n   стало: {e['final'][:300]}")
     return "\n".join(lines)
+
+
+def _normalize_birthdays(raw) -> list[dict]:
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for b in raw:
+        if isinstance(b, dict) and _clean_str(b.get("date")):
+            out.append({"who": _clean_str(b.get("who")) or "собеседник", "date": _clean_str(b.get("date"))})
+    return out
 
 
 def _normalize_events(raw) -> list[dict]:
@@ -241,6 +256,7 @@ async def analyze_chat(*, chat_title: str, history_rows, new_ids: set[int], want
         "summary": _clean_str(raw.get("summary")) or "",
         "tasks": _normalize_tasks(raw.get("tasks")),
         "events": _normalize_events(raw.get("events")),
+        "birthdays": _normalize_birthdays(raw.get("birthdays")),
         "reply": _clean_str(raw.get("reply")) if want_reply else None,
     }
 

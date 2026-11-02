@@ -103,7 +103,17 @@ async def morning_text() -> str:
     overdue = [t for t in tasks if t["due_ts"] and t["due_ts"] < now.timestamp()]
     today = [t for t in tasks if t["due_ts"] and now.timestamp() <= t["due_ts"] <= end_of_day]
     nodate = [t for t in tasks if not t["due_ts"]]
+    from . import skills
     lines = [f"☀️ Доброе утро! План на {now:%d.%m}"]
+    try:
+        weather = await skills.weather_text()
+        if weather:
+            lines.append(weather)
+    except Exception:
+        log.exception("Погода недоступна")
+    bdays = await skills.birthdays_text(now)
+    if bdays:
+        lines += [""] + bdays
     if overdue:
         lines += ["", "⚠️ Просрочено:"] + [f"{t['id']}. {t['text']} — {fmt_ts(t['due_ts'])}" for t in overdue]
     lines += ["", "📝 Сегодня:"]
@@ -115,6 +125,10 @@ async def morning_text() -> str:
         lines += ["", "⏳ Ждут вашего ответа:"]
         lines += [f"{'⭐ ' if s == 'vip' else ''}{r['chat_title']} — {_ago(r['ts'])}: «{r['text'][:80]}»"
                   for r, s in waiting[:10]]
+    shopping = await db.shopping()
+    if shopping:
+        items = ", ".join(i["item"] for i in shopping[:10]) + ("…" if len(shopping) > 10 else "")
+        lines += ["", f"🛒 Купить ({len(shopping)}): {items}  /list"]
     return "\n".join(lines)
 
 

@@ -55,7 +55,13 @@ HELP = """Я ваш секретарь в Telegram.
 /digest 21:00 | off, /morning 09:00 | off — время сводки и плана
 /wait 3 | off — напоминать о неотвеченных через N часов
 /ask вопрос — поиск по переписке
-/voice on | off — расшифровка голосовых"""
+/voice on | off — расшифровка голосовых
+
+Навыки
+/city Москва — город для погоды, /weather — погода сейчас
+/buy молоко, хлеб или «+молоко» — в список покупок, /list — список
+/bday Маша 15.03 — день рождения, /bdays — все (ещё запоминаю их из переписки)
+/tpl цена, сколько стоит | Стрижка 1500 ₽ — шаблонный ответ, /tpl — список"""
 
 
 async def _is_owner(m: Message) -> bool:
@@ -79,7 +85,8 @@ async def _status() -> str:
         f"Напоминать о неотвеченных: " + (
             "выкл" if await db.get("wait_hours") == "off" else f"через {await db.get('wait_hours')} ч"),
         f"Голосовые: {'расшифровываю' if await db.get('voice') == 'on' else 'выкл'}",
-        f"Фактов для ответов: {len(await db.facts())} (/faq)",
+        f"Фактов для ответов: {len(await db.facts())} (/faq), шаблонов: {len(await db.templates())} (/tpl)",
+        f"Погода: {await db.get('city_name') or 'город не задан (/city)'}",
         f"Как отвечать: {await db.get('persona')}",
         _llm_status(),
     ]

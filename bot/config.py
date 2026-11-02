@@ -94,6 +94,9 @@ DEFAULT_SETTINGS = {
     "away_note": "",
     "away_id": "",
     "last_morning_date": "",
+    "city_name": "",          # город для погоды в утреннем плане
+    "city_lat": "",
+    "city_lon": "",
     "owner_name": "",
     "last_digest_date": "",
     "last_digest_ts": "0",
