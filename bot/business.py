@@ -281,9 +281,16 @@ def _real_events(events: list[dict], new_rows) -> list[dict]:
     return out
 
 
-async def send_reply(bot: Bot, conn_id: str, chat_id: int, title: str, text: str):
+BY_BOT = {"owner": 0, "auto": 1, "approved": 2}
+
+
+async def send_reply(bot: Bot, conn_id: str, chat_id: int, title: str, text: str, kind: str = "auto"):
+    """kind: auto — бот ответил сам; approved — вы одобрили черновик; owner — текст написали вы."""
     sent = await bot.send_message(chat_id, text, business_connection_id=conn_id, parse_mode=None)
     await db.add_message(
         conn_id=conn_id, chat_id=chat_id, msg_id=sent.message_id, chat_title=title,
-        sender="бот", from_owner=1, by_bot=1, text=text, ts=time.time(), processed=1,
+        sender="вы" if kind == "owner" else "бот", from_owner=1, by_bot=BY_BOT[kind],
+        text=text, ts=time.time(), processed=1,
     )
+    if kind != "auto":
+        await db.expire_drafts(chat_id)

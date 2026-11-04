@@ -82,10 +82,25 @@ def draft_kb(draft_id: int) -> InlineKeyboardMarkup:
               [("❌ Не отвечать", f"draft:skip:{draft_id}")])
 
 
+def reply_row(chat_id: int) -> list[tuple[str, str]]:
+    return [("✍️ Ответить", f"rp:write:{chat_id}"), ("🤖 Предложи ответ", f"rp:ai:{chat_id}")]
+
+
+def chats_kb(chats) -> InlineKeyboardMarkup | None:
+    """Кнопки «ответить» по чатам из сводки: сначала те, кто ждёт ответа."""
+    rows = []
+    for c in chats[:8]:
+        mark = "⏳ " if not c["last_from_owner"] else ""
+        rows.append([(f"{mark}✍️ {c['chat_title'][:35]}", f"rp:open:{c['chat_id']}")])
+    return kb(*rows) if rows else None
+
+
 def contact_kb(chat_id: int, status: str = "") -> InlineKeyboardMarkup:
     if status == "vip":
-        return kb([("☆ Убрать из важных", f"ct:normal:{chat_id}"), ("🚫 Не трогать", f"ct:ignore:{chat_id}")])
-    return kb([("⭐ Важный контакт", f"ct:vip:{chat_id}"), ("🚫 Не трогать", f"ct:ignore:{chat_id}")])
+        second = [("☆ Убрать из важных", f"ct:normal:{chat_id}"), ("🚫 Не трогать", f"ct:ignore:{chat_id}")]
+    else:
+        second = [("⭐ Важный контакт", f"ct:vip:{chat_id}"), ("🚫 Не трогать", f"ct:ignore:{chat_id}")]
+    return kb(reply_row(chat_id), second)
 
 
 def event_kb(event_id: int) -> InlineKeyboardMarkup:

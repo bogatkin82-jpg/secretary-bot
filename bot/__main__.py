@@ -4,7 +4,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
-from . import business, config, extras, jobs, owner, skills
+from . import business, config, extras, jobs, owner, reply, settings_menu, skills
 from .db import db
 
 
@@ -13,10 +13,11 @@ async def main():
     await db.open()
     bot = Bot(config.BOT_TOKEN)
     dp = Dispatcher()
-    dp.include_routers(business.router, extras.router, skills.router, owner.router)
+    dp.include_routers(business.router, settings_menu.router, reply.router, extras.router,
+                       skills.router, owner.router)
 
     await bot.set_my_commands([
-        BotCommand(command="settings", description="Режим ответов и настройки"),
+        BotCommand(command="settings", description="⚙️ Настройки: режим, время плана и сводки"),
         BotCommand(command="tasks", description="Открытые задачи"),
         BotCommand(command="plan", description="План на сегодня"),
         BotCommand(command="summary", description="Сводка переписок"),

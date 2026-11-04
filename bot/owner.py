@@ -12,7 +12,7 @@ from . import ai, config, state
 from .business import send_reply
 from .db import db
 from .jobs import build_summary
-from .util import MODE_NAMES, fmt_ts, kb, notify, task_kb
+from .util import MODE_NAMES, chats_kb, fmt_ts, kb, notify, task_kb
 
 log = logging.getLogger(__name__)
 router = Router(name="owner")
@@ -30,12 +30,15 @@ HELP = """Я ваш секретарь в Telegram.
 • пока вас нет, готовлю ответ (или отвечаю сам)
 • утром присылаю план дня ☀️, вечером — сводку 🗞
 
+Ответить человеку: кнопка «✍️» под сводкой, «важным» или «ждёт ответа» —
+или просто ответьте свайпом на такое уведомление.
+
 Просто напишите мне:
 «завтра в 10 позвонить в банк» — запишу задачу
 «что Петя говорил про отчёт?» — поищу в переписке (вопрос со знаком ?)
 
 Ответы
-/settings — режим: выкл / черновик / авто
+/settings — все настройки кнопками: режим, время плана и сводки, пауза, ночь
 /persona текст — как отвечать от вашего имени
 /faq текст — факт для ответов (цены, адрес…), /faq — список
 /idle 15 — отвечать, если вы молчите в чате > N минут
@@ -173,8 +176,11 @@ async def cmd_digest(m: Message, command: CommandObject):
 
 async def _send_summary(bot: Bot, hours: float):
     await notify(bot, "Собираю сводку…")
-    text = await build_summary(time.time() - hours * 3600, f"последние {hours:g} ч")
-    await notify(bot, f"🗞 Сводка за {hours:g} ч\n\n" + (text or "Новых сообщений не было."))
+    since = time.time() - hours * 3600
+    text = await build_summary(since, f"последние {hours:g} ч")
+    markup = chats_kb(await db.chats_since(since)) if text else None
+    await notify(bot, f"🗞 Сводка за {hours:g} ч\n\n" + (text or "Новых сообщений не было.")
+                 + ("\n\nОтветить — кнопками ниже ⬇️" if markup else ""), markup)
 
 
 @router.message(Command("summary"))
@@ -270,12 +276,29 @@ def _task_id_from_reply(m: Message) -> int | None:
 async def free_text(m: Message, bot: Bot):
     if not await _is_owner(m):
         return
+    from . import reply, settings_menu
+    uid = m.from_user.id
+    # 0) «отмена» — сбросить, что бы ни ждали
+    if m.text.strip().lower() in ("отмена", "отменить", "cancel"):
+        pending = any(d.pop(uid, None) is not None for d in
+                      (_editing, _retiming, reply.writing, settings_menu.awaiting))
+        return await m.answer("Отменил 👌" if pending else "Нечего отменять.")
+    # 0a) своё время для настройки из /settings
+    cfg_key = settings_menu.awaiting.pop(uid, None)
+    if cfg_key:
+        return await settings_menu.handle_custom_input(m, cfg_key)
+    # 0b) ответ собеседнику: после кнопки «✍️ Ответить» или свайпом на уведомление о его чате
+    chat_id = reply.writing.pop(uid, None)
+    if chat_id is None and not _editing.get(uid) and not _retiming.get(uid):
+        chat_id = reply.chat_id_from_reply(m)
+    if chat_id is not None:
+        return await reply.send_owner_text(m, bot, chat_id)
     # 1) владелец переписывает черновик
     draft_id = _editing.pop(m.from_user.id, None)
     if draft_id:
         d = await db.get_draft(draft_id)
         if d and d["status"] == "pending":
-            await send_reply(bot, d["conn_id"], d["chat_id"], d["chat_title"], m.text)
+            await send_reply(bot, d["conn_id"], d["chat_id"], d["chat_title"], m.text, kind="owner")
             await db.set_draft_status(draft_id, "sent")
             if m.text.strip() != (d["text"] or "").strip():
                 await db.add_style_example(d["text"], m.text)   # учимся на ваших правках
@@ -330,7 +353,7 @@ async def cb_draft(c: CallbackQuery, bot: Bot):
                        show_alert=True)
         return await c.message.edit_reply_markup(reply_markup=None)
     if action == "send":
-        await send_reply(bot, d["conn_id"], d["chat_id"], d["chat_title"], d["text"])
+        await send_reply(bot, d["conn_id"], d["chat_id"], d["chat_title"], d["text"], kind="approved")
         await db.set_draft_status(d["id"], "sent")
         await c.message.edit_text(c.message.text + "\n\n✅ Отправлено")
     elif action == "skip":

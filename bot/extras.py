@@ -211,7 +211,7 @@ async def cmd_morning(m: Message, command: CommandObject):
 
 @router.message(Command("plan"))
 async def cmd_plan(m: Message):
-    await m.answer(await jobs.morning_text())
+    await m.answer(await jobs.morning_text(), reply_markup=await jobs.morning_kb())
 
 
 # ---------- голосовые ----------

@@ -9,7 +9,7 @@ from aiogram import Bot
 
 from . import ai, config, state
 from .db import db
-from .util import fmt_ts, notify, task_kb
+from .util import chats_kb, fmt_ts, kb, notify, reply_row, task_kb
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +78,8 @@ async def _unanswered(bot: Bot):
         if time.time() - r["ts"] < limit * 3600 or r["nudged"] == r["id"]:
             continue
         star = "⭐ " if status == "vip" else ""
-        await notify(bot, f"⏳ {star}{r['chat_title']} ждёт ответа уже {_ago(r['ts'])}:\n«{r['text'][:300]}»")
+        await notify(bot, f"⏳ {star}{r['chat_title']} ждёт ответа уже {_ago(r['ts'])}:\n«{r['text'][:300]}»",
+                     kb(reply_row(r["chat_id"])))
         await db.set_nudged(r["chat_id"], r["id"])
 
 
@@ -125,6 +126,7 @@ async def morning_text() -> str:
         lines += ["", "⏳ Ждут вашего ответа:"]
         lines += [f"{'⭐ ' if s == 'vip' else ''}{r['chat_title']} — {_ago(r['ts'])}: «{r['text'][:80]}»"
                   for r, s in waiting[:10]]
+        lines.append("Ответить — кнопками ниже.")
     shopping = await db.shopping()
     if shopping:
         items = ", ".join(i["item"] for i in shopping[:10]) + ("…" if len(shopping) > 10 else "")
@@ -132,9 +134,15 @@ async def morning_text() -> str:
     return "\n".join(lines)
 
 
+async def morning_kb():
+    waiting = await waiting_list(1)
+    return chats_kb([{"chat_id": r["chat_id"], "chat_title": r["chat_title"], "last_from_owner": 0}
+                     for r, _ in waiting])
+
+
 async def _morning(bot: Bot):
     if await _daily(bot, "morning_time", "last_morning_date"):
-        await notify(bot, await morning_text())
+        await notify(bot, await morning_text(), await morning_kb())
 
 
 async def _digest(bot: Bot):
@@ -143,7 +151,8 @@ async def _digest(bot: Bot):
     since = float(await db.get("last_digest_ts") or 0) or time.time() - 86400
     await db.set("last_digest_ts", str(time.time()))
     text = await build_summary(since, "время с прошлой сводки")
-    await notify(bot, "🗞 Сводка за день\n\n" + (text or "Новых сообщений не было."))
+    await notify(bot, "🗞 Сводка за день\n\n" + (text or "Новых сообщений не было."),
+                 chats_kb(await db.chats_since(since)) if text else None)
 
 
 async def end_away(bot: Bot, reason: str = "закончился"):
@@ -155,7 +164,8 @@ async def end_away(bot: Bot, reason: str = "закончился"):
     await db.set("away_note", "")
     text = await build_summary(started, "время, пока вас не было")
     await notify(bot, f"👋 Режим «нет на связи» {reason}. С возвращением!\n\n"
-                      + (text or "Пока вас не было, никто не писал."))
+                      + (text or "Пока вас не было, никто не писал."),
+                 chats_kb(await db.chats_since(started)) if text else None)
 
 
 async def _away_end(bot: Bot):

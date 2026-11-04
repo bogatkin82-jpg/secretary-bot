@@ -163,10 +163,27 @@ class DB:
             other = [r["text"] for r in await cur.fetchall()]
         return own + other
 
+    async def chat_info(self, chat_id: int):
+        """conn_id и название чата по последнему сообщению — чтобы ответить в него."""
+        async with self.conn.execute(
+            "SELECT conn_id, chat_title FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT 1",
+            (chat_id,)) as cur:
+            return await cur.fetchone()
+
+    async def chats_since(self, since_ts: float):
+        """Чаты с сообщениями собеседников за период: (chat_id, название, ждёт ли ответа)."""
+        async with self.conn.execute(
+            "SELECT m.chat_id, m.chat_title, m.from_owner AS last_from_owner, m.ts FROM messages m "
+            "JOIN (SELECT chat_id, MAX(id) AS mid FROM messages WHERE by_bot IN (0, 2) GROUP BY chat_id) x "
+            "  ON m.id = x.mid "
+            "WHERE m.chat_id IN (SELECT DISTINCT chat_id FROM messages WHERE ts>=? AND from_owner=0) "
+            "ORDER BY m.from_owner, m.ts DESC", (since_ts,)) as cur:
+            return await cur.fetchall()
+
     async def last_owner_activity(self, chat_id: int) -> float:
         """Когда владелец сам (не бот) последний раз писал в чат."""
         async with self.conn.execute(
-            "SELECT MAX(ts) AS t FROM messages WHERE chat_id=? AND from_owner=1 AND by_bot=0",
+            "SELECT MAX(ts) AS t FROM messages WHERE chat_id=? AND from_owner=1 AND by_bot IN (0, 2)",
             (chat_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -181,7 +198,7 @@ class DB:
 
     async def messages_since(self, since_ts: float):
         async with self.conn.execute(
-            "SELECT * FROM messages WHERE ts>=? AND by_bot=0 ORDER BY chat_id, ts", (since_ts,)
+            "SELECT * FROM messages WHERE ts>=? AND by_bot IN (0, 2) ORDER BY chat_id, ts", (since_ts,)
         ) as cur:
             return await cur.fetchall()
 
@@ -287,7 +304,7 @@ class DB:
         """Чаты, где последнее (не от бота) сообщение — от собеседника."""
         async with self.conn.execute(
             "SELECT m.*, n.msg_row_id AS nudged FROM messages m "
-            "JOIN (SELECT chat_id, MAX(id) AS mid FROM messages WHERE by_bot=0 GROUP BY chat_id) x "
+            "JOIN (SELECT chat_id, MAX(id) AS mid FROM messages WHERE by_bot IN (0, 2) GROUP BY chat_id) x "
             "  ON m.id = x.mid "
             "LEFT JOIN nudges n ON n.chat_id = m.chat_id "
             "WHERE m.from_owner=0 AND m.ts<=? AND m.ts>=? ORDER BY m.ts",
@@ -343,7 +360,7 @@ class DB:
 
     # ---------- search ----------
     async def messages_between(self, since_ts: float, chat_ids: list[int] | None = None):
-        q = "SELECT * FROM messages WHERE ts>=? AND by_bot=0"
+        q = "SELECT * FROM messages WHERE ts>=? AND by_bot IN (0, 2)"
         args: list = [since_ts]
         if chat_ids:
             q += f" AND chat_id IN ({','.join('?' * len(chat_ids))})"
