@@ -13,7 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from . import ai, config
 from .db import db
-from .util import chats_kb, draft_kb, kb, reply_row  # noqa: F401
+from .util import chats_kb, draft_kb, kb, reply_kb, reply_row  # noqa: F401
 
 log = logging.getLogger(__name__)
 router = Router(name="reply")
@@ -68,8 +68,18 @@ async def cb_reply(c: CallbackQuery, bot: Bot):
 
     if action == "open":
         last = (await db.history(chat_id, 6))
-        await c.message.answer(f"💬 {title}\n\n{_fmt_last(last)}", reply_markup=kb(reply_row(chat_id)))
+        await c.message.answer(f"💬 {title}\n\n{_fmt_last(last)}", reply_markup=reply_kb(chat_id))
         return await c.answer()
+
+    if action == "done":
+        await db.set_handled(chat_id)
+        await db.expire_drafts(chat_id)
+        await c.answer("Отметил ✅ Напомню, только если напишут снова")
+        try:
+            await c.message.edit_text((c.message.text or "") + "\n\n✅ Отвечено")
+        except Exception:
+            pass
+        return
 
     if action == "write":
         from . import owner
@@ -89,7 +99,7 @@ async def cb_reply(c: CallbackQuery, bot: Bot):
             return await c.message.answer(f"⚠️ Не получилось подготовить ответ: {e}")
         if not draft:
             return await c.message.answer(f"Похоже, «{title}» ответ не нужен. Если всё же хотите ответить — "
-                                          "нажмите «✍️ Ответить».", reply_markup=kb(reply_row(chat_id)))
+                                          "нажмите «✍️ Ответить».", reply_markup=reply_kb(chat_id))
         await db.expire_drafts(chat_id)
         draft_id = await db.add_draft(info["conn_id"], chat_id, title, draft)
         await c.message.answer(f"💬 «{title}»\n\nЧерновик ответа:\n{draft}", reply_markup=draft_kb(draft_id))

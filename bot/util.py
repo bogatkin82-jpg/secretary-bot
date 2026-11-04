@@ -86,6 +86,14 @@ def reply_row(chat_id: int) -> list[tuple[str, str]]:
     return [("✍️ Ответить", f"rp:write:{chat_id}"), ("🤖 Предложи ответ", f"rp:ai:{chat_id}")]
 
 
+def done_row(chat_id: int) -> list[tuple[str, str]]:
+    return [("✅ Уже ответил — не напоминать", f"rp:done:{chat_id}")]
+
+
+def reply_kb(chat_id: int) -> InlineKeyboardMarkup:
+    return kb(reply_row(chat_id), done_row(chat_id))
+
+
 def chats_kb(chats) -> InlineKeyboardMarkup | None:
     """Кнопки «ответить» по чатам из сводки: сначала те, кто ждёт ответа."""
     rows = []
@@ -100,7 +108,7 @@ def contact_kb(chat_id: int, status: str = "") -> InlineKeyboardMarkup:
         second = [("☆ Убрать из важных", f"ct:normal:{chat_id}"), ("🚫 Не трогать", f"ct:ignore:{chat_id}")]
     else:
         second = [("⭐ Важный контакт", f"ct:vip:{chat_id}"), ("🚫 Не трогать", f"ct:ignore:{chat_id}")]
-    return kb(reply_row(chat_id), second)
+    return kb(reply_row(chat_id), done_row(chat_id), second)
 
 
 def event_kb(event_id: int) -> InlineKeyboardMarkup:

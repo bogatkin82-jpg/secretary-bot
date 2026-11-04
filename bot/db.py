@@ -62,6 +62,9 @@ CREATE TABLE IF NOT EXISTS birthdays(
 -- шаблонные ответы: ключевые слова -> готовый текст
 CREATE TABLE IF NOT EXISTS templates(
     id INTEGER PRIMARY KEY AUTOINCREMENT, keywords TEXT, answer TEXT, created_ts REAL);
+-- чаты, которые вы отметили «уже ответил» (по телефону, лично и т.п.)
+CREATE TABLE IF NOT EXISTS handled(chat_id INTEGER PRIMARY KEY, ts REAL);
+
 CREATE TABLE IF NOT EXISTS template_sent(chat_id INTEGER, tpl_id INTEGER, ts REAL,
     PRIMARY KEY(chat_id, tpl_id));
 """
@@ -170,14 +173,28 @@ class DB:
             (chat_id,)) as cur:
             return await cur.fetchone()
 
+    async def set_handled(self, chat_id: int):
+        await self.conn.execute(
+            "INSERT INTO handled(chat_id, ts) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET ts=excluded.ts",
+            (chat_id, time.time()))
+        await self.conn.commit()
+
+    async def handled_ts(self, chat_id: int) -> float:
+        async with self.conn.execute("SELECT ts FROM handled WHERE chat_id=?", (chat_id,)) as cur:
+            row = await cur.fetchone()
+        return row["ts"] if row else 0.0
+
     async def chats_since(self, since_ts: float):
         """Чаты с сообщениями собеседников за период: (chat_id, название, ждёт ли ответа)."""
         async with self.conn.execute(
-            "SELECT m.chat_id, m.chat_title, m.from_owner AS last_from_owner, m.ts FROM messages m "
+            "SELECT m.chat_id, m.chat_title, m.ts, "
+            "  CASE WHEN m.from_owner=1 OR (h.ts IS NOT NULL AND h.ts>=m.ts) THEN 1 ELSE 0 END AS last_from_owner "
+            "FROM messages m "
             "JOIN (SELECT chat_id, MAX(id) AS mid FROM messages WHERE by_bot IN (0, 2) GROUP BY chat_id) x "
             "  ON m.id = x.mid "
+            "LEFT JOIN handled h ON h.chat_id = m.chat_id "
             "WHERE m.chat_id IN (SELECT DISTINCT chat_id FROM messages WHERE ts>=? AND from_owner=0) "
-            "ORDER BY m.from_owner, m.ts DESC", (since_ts,)) as cur:
+            "ORDER BY last_from_owner, m.ts DESC", (since_ts,)) as cur:
             return await cur.fetchall()
 
     async def last_owner_activity(self, chat_id: int) -> float:
@@ -307,7 +324,8 @@ class DB:
             "JOIN (SELECT chat_id, MAX(id) AS mid FROM messages WHERE by_bot IN (0, 2) GROUP BY chat_id) x "
             "  ON m.id = x.mid "
             "LEFT JOIN nudges n ON n.chat_id = m.chat_id "
-            "WHERE m.from_owner=0 AND m.ts<=? AND m.ts>=? ORDER BY m.ts",
+            "LEFT JOIN handled h ON h.chat_id = m.chat_id "
+            "WHERE m.from_owner=0 AND m.ts<=? AND m.ts>=? AND (h.ts IS NULL OR h.ts < m.ts) ORDER BY m.ts",
             (older_than_ts, newer_than_ts),
         ) as cur:
             return await cur.fetchall()

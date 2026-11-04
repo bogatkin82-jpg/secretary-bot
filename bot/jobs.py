@@ -9,7 +9,7 @@ from aiogram import Bot
 
 from . import ai, config, state
 from .db import db
-from .util import chats_kb, fmt_ts, kb, notify, reply_row, task_kb
+from .util import chats_kb, fmt_ts, notify, reply_kb, task_kb
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,14 @@ async def build_summary(since_ts: float, period: str) -> str | None:
     chats = OrderedDict((k, v) for k, v in chats.items() if any(not r["from_owner"] for r in v))
     if not chats:
         return None
-    text = await ai.summarize(chats, period)
+    # кто реально ждёт ответа — считаем сами, а не доверяем нейросети
+    status = {}
+    for title, msgs in chats.items():
+        last = msgs[-1]
+        answered = bool(last["from_owner"]) or await db.handled_ts(last["chat_id"]) >= last["ts"]
+        status[title] = ("answered" if answered
+                         else "optional" if last["importance"] == "low" else "waiting")
+    text = await ai.summarize(chats, period, status)
     tasks = await db.open_tasks()
     if tasks:
         text += "\n\n📝 Открытые задачи:\n" + "\n".join(
@@ -79,7 +86,7 @@ async def _unanswered(bot: Bot):
             continue
         star = "⭐ " if status == "vip" else ""
         await notify(bot, f"⏳ {star}{r['chat_title']} ждёт ответа уже {_ago(r['ts'])}:\n«{r['text'][:300]}»",
-                     kb(reply_row(r["chat_id"])))
+                     reply_kb(r["chat_id"]))
         await db.set_nudged(r["chat_id"], r["id"])
 
 
