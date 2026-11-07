@@ -10,7 +10,7 @@
 ![Telegram Business](https://img.shields.io/badge/Telegram-Business-26A5E4?logo=telegram&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-[Возможности](#-возможности) · [Как это работает](#-как-это-работает) · [Быстрый старт](#-быстрый-старт) · [Команды](#-команды) · [Настройка](#-настройка) · [Приватность](#-приватность-и-безопасность)
+[Скриншоты](#-скриншоты) · [Возможности](#-возможности) · [Как это работает](#-как-это-работает) · [Быстрый старт](#-быстрый-старт) · [Команды](#-команды) · [Настройка](#-настройка) · [Приватность](#-приватность-и-безопасность)
 
 </div>
 
@@ -32,6 +32,21 @@
 Бот **однопользовательский**: он слушается только владельца, чей `OWNER_ID` указан в конфиге. Чужой аккаунт, подключивший бота, игнорируется.
 
 > Проект рассчитан на личное использование. Для работы нужны **Telegram Premium**, сервер с Docker и ключ одной из поддерживаемых нейросетей.
+
+---
+
+## 📸 Скриншоты
+
+<table>
+  <tr>
+    <td align="center"><a href="docs/screenshots/settings.jpg"><img src="docs/screenshots/settings.jpg" width="300" alt="Настройки бота"></a><br><sub>Настройки</sub></td>
+    <td align="center"><a href="docs/screenshots/important.jpg"><img src="docs/screenshots/important.jpg" width="300" alt="Важное сообщение"></a><br><sub>Важное сообщение</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="docs/screenshots/draft.jpg"><img src="docs/screenshots/draft.jpg" width="300" alt="Черновик ответа"></a><br><sub>Черновик ответа</sub></td>
+    <td align="center"><a href="docs/screenshots/morning.jpg"><img src="docs/screenshots/morning.jpg" width="300" alt="Утренний план"></a><br><sub>Утренний план</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -69,7 +84,7 @@
 - ⭐ Важные контакты и 🚫 «не трогать»: `/vip`, `/ignore`, `/contacts`.
 - 🧹 Ретеншен: старые данные удаляются по расписанию (по умолчанию — старше 365 дней).
 
-### Как это выглядит
+### Примеры уведомлений
 
 ```text
 🔴 Важное от «Иван»:
