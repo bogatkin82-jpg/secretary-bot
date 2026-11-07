@@ -61,13 +61,14 @@ async def on_message(m: Message, bot: Bot):
     conn = await _owner_conn(m.business_connection_id, bot)
     if conn is None:
         return
+    contact = await db.contact(m.chat.id)
+    if contact is not None and (contact["status"] or "") == "ignore":
+        return                                   # «не трогать»: ни текста, ни метаданных
     title = chat_title(m)
-    is_new_contact = await db.contact(m.chat.id) is None
+    is_new_contact = contact is None
     await db.upsert_contact(m.chat.id, m.chat.full_name or title, m.chat.username)
     if is_new_contact:   # новый собеседник — вдруг у него в профиле указан день рождения
         asyncio.create_task(skills.check_profile_birthday(bot, m.chat.id, m.chat.full_name or title))
-    if await db.contact_status(m.chat.id) == "ignore":
-        return                                   # «не трогать»: ничего не читаем и не храним
 
     from_owner = m.from_user is not None and m.from_user.id == config.OWNER_ID
     by_bot = m.sender_business_bot is not None
@@ -98,7 +99,8 @@ async def _transcribe_then_schedule(m: Message, media, title: str, from_owner: b
     label = f"[{kind} {voice.fmt_duration(duration)}]"
     try:
         transcript = await voice.transcribe(bot, file_id)
-        await db.update_message_text(m.chat.id, m.message_id, f"{label} {transcript}")
+        await db.update_message_text(m.chat.id, m.message_id, f"{label} {transcript}",
+                                     m.business_connection_id)
         if not from_owner:
             await notify(bot, f"🎤 {title} ({kind}, {voice.fmt_duration(duration)}):\n{transcript}")
     except Exception as e:
@@ -110,8 +112,13 @@ async def _transcribe_then_schedule(m: Message, media, title: str, from_owner: b
 
 
 @router.edited_business_message()
-async def on_edit(m: Message):
-    await db.update_message_text(m.chat.id, m.message_id, message_text(m))
+async def on_edit(m: Message, bot: Bot):
+    # Правка приходит по всем business-подключениям, а не только по вашему:
+    # без этой проверки чужой аккаунт мог бы менять текст в уже сохранённой истории.
+    if await _owner_conn(m.business_connection_id, bot) is None:
+        return
+    await db.update_message_text(m.chat.id, m.message_id, message_text(m),
+                                 m.business_connection_id)
 
 
 @router.deleted_business_messages()
@@ -162,6 +169,55 @@ async def _report_error(bot: Bot, e: Exception, what: str = "разобрать 
                           "Сообщения сохранены — разберу их вместе со следующим сообщением в этом чате.")
 
 
+async def recover(bot: Bot, cutoff_id: int | None = None):
+    """Разобрать сообщения, которые остались необработанными после остановки бота.
+
+    Отвечать автоматически на них нельзя: сообщение могло прийти несколько часов
+    назад, пока контейнер лежал. Поэтому задачи/важное/встречи создаём как обычно,
+    а ответ (если он уместен) сохраняем черновиком — отправит владелец.
+
+    cutoff_id — максимальный id сообщения на момент старта процесса. Всё, что
+    пришло позже, обрабатывается обычным путём и в восстановление не попадает.
+    """
+    if not config.RECOVERY_ENABLED:
+        return
+    if cutoff_id is None:
+        cutoff_id = await db.max_message_id()
+    await asyncio.sleep(config.RECOVERY_DELAY_SECONDS)
+    try:
+        reset = await db.reset_pending_voice(cutoff_id)
+        if reset:
+            log.info("Восстановление: %s голосовых переведены в обычную обработку", reset)
+        rows = await db.chats_with_unprocessed(cutoff_id)
+    except Exception:
+        log.exception("Не удалось прочитать очередь восстановления")
+        return
+    if not rows:
+        return
+    log.info("Восстановление: чатов с необработанными сообщениями — %s", len(rows))
+    for row in rows:
+        chat_id = row["chat_id"]
+        try:
+            if await db.contact_status(chat_id) == "ignore":
+                continue
+            info = await db.chat_info(chat_id)
+            if not info:
+                continue
+            conn = await db.get_connection(info["conn_id"])
+            if conn is None or not conn["enabled"]:
+                continue
+            lock = _locks.setdefault(chat_id, asyncio.Lock())
+            async with lock:
+                await process_chat(chat_id, info["conn_id"], bot, recovery=True,
+                                   cutoff_id=cutoff_id)
+            log.info("Восстановлен чат %s (%s сообщений)", chat_id, row["n"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Не удалось восстановить чат %s", chat_id)
+        await asyncio.sleep(config.RECOVERY_PAUSE_SECONDS)
+
+
 async def _should_reply(chat_id: int, new_rows, conn, mode: str, away) -> bool:
     if mode == "off" or not conn["can_reply"]:
         return False
@@ -178,11 +234,18 @@ async def _should_reply(chat_id: int, new_rows, conn, mode: str, away) -> bool:
     return True
 
 
-async def process_chat(chat_id: int, conn_id: str, bot: Bot):
+async def process_chat(chat_id: int, conn_id: str, bot: Bot, recovery: bool = False,
+                       cutoff_id: int | None = None):
     new_rows = await db.unprocessed(chat_id)
+    if recovery and cutoff_id is not None:
+        # В восстановление берём только то, что было до старта процесса;
+        # свежие сообщения разберёт обычный путь после debounce.
+        new_rows = [r for r in new_rows if r["id"] <= cutoff_id]
     if not new_rows:
         return
     conn = await db.get_connection(conn_id)
+    if conn is None or not conn["enabled"]:
+        return
     title = new_rows[-1]["chat_title"]
     status = await db.contact_status(chat_id)
     mode = await state.effective_mode()
@@ -255,7 +318,12 @@ async def process_chat(chat_id: int, conn_id: str, bot: Bot):
         await db.mark_template_sent(chat_id, template["id"])
     if not reply:
         return
-    if mode in ("auto", "away"):
+    if recovery:
+        await db.expire_drafts(chat_id)
+        draft_id = await db.add_draft(conn_id, chat_id, title, reply)
+        await notify(bot, f"♻️ После перезапуска разобрал «{title}»:\n{result['summary']}\n\n"
+                          f"Черновик ответа:\n{reply}", draft_kb(draft_id))
+    elif mode in ("auto", "away"):
         await send_reply(bot, conn_id, chat_id, title, reply)
         if mode == "away":
             await db.set_away_replied(chat_id, away["id"])

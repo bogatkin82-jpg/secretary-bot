@@ -18,21 +18,29 @@ DAY_HOURS = (9, 22)   # «вы не ответили» напоминаем то
 
 async def build_summary(since_ts: float, period: str) -> str | None:
     rows = await db.messages_since(since_ts)
-    chats: "OrderedDict[str, list]" = OrderedDict()
+    # Ключ — chat_id, а не имя: тёзки не сливаются, переименование не рвёт историю.
+    chats: "OrderedDict[int, list]" = OrderedDict()
+    titles: dict[int, str] = {}
     for r in rows:
-        chats.setdefault(r["chat_title"], []).append(r)
+        chats.setdefault(r["chat_id"], []).append(r)
+        titles[r["chat_id"]] = r["chat_title"]
     # чаты, где писали только вы, неинтересны
     chats = OrderedDict((k, v) for k, v in chats.items() if any(not r["from_owner"] for r in v))
     if not chats:
         return None
     # кто реально ждёт ответа — считаем сами, а не доверяем нейросети
     status = {}
-    for title, msgs in chats.items():
+    for chat_id, msgs in chats.items():
         last = msgs[-1]
-        answered = bool(last["from_owner"]) or await db.handled_ts(last["chat_id"]) >= last["ts"]
-        status[title] = ("answered" if answered
-                         else "optional" if last["importance"] == "low" else "waiting")
-    text = await ai.summarize(chats, period, status)
+        if last["by_bot"] == 1:
+            status[chat_id] = "bot"        # ответил сам бот — владельцу делать нечего
+        elif last["from_owner"] or await db.handled_ts(chat_id) >= last["ts"]:
+            status[chat_id] = "answered"
+        elif last["importance"] == "low":
+            status[chat_id] = "optional"
+        else:
+            status[chat_id] = "waiting"
+    text = await ai.summarize(chats, period, status, titles)
     tasks = await db.open_tasks()
     if tasks:
         text += "\n\n📝 Открытые задачи:\n" + "\n".join(
@@ -90,17 +98,41 @@ async def _unanswered(bot: Bot):
         await db.set_nudged(r["chat_id"], r["id"])
 
 
-async def _daily(bot: Bot, key_time: str, key_date: str) -> bool:
-    """True, если пора отправить ежедневное сообщение (и отметить, что отправили)."""
+_daily_attempts: dict[str, float] = {}
+
+
+def _today_str() -> str:
+    return datetime.now(config.TZ).strftime("%Y-%m-%d")
+
+
+async def _daily_due(key_time: str, key_date: str) -> bool:
+    """Пора ли отправлять ежедневное сообщение.
+
+    Дата «отправлено» ставится только после успешной отправки. Если окно
+    (DAILY_WINDOW_HOURS) уже прошло — помечаем день пропущенным, чтобы
+    «Доброе утро» не пришло вечером.
+    """
     value = await db.get(key_time)
     if value == "off":
         return False
     now = datetime.now(config.TZ)
-    hh, mm = map(int, value.split(":"))
-    today = now.strftime("%Y-%m-%d")
-    if (now.hour, now.minute) < (hh, mm) or await db.get(key_date) == today:
+    try:
+        hh, mm = map(int, value.split(":"))
+    except ValueError:
+        log.error("Некорректное время %s=%r", key_time, value)
         return False
-    await db.set(key_date, today)
+    scheduled = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    today = now.strftime("%Y-%m-%d")
+    if now < scheduled or await db.get(key_date) == today:
+        return False
+    if now > scheduled + timedelta(hours=config.DAILY_WINDOW_HOURS):
+        await db.set(key_date, today)
+        log.info("%s: окно отправки прошло — сегодня пропускаю", key_time)
+        return False
+    last_try = _daily_attempts.get(key_time, 0.0)
+    if time.time() - last_try < config.DAILY_RETRY_MINUTES * 60:
+        return False
+    _daily_attempts[key_time] = time.time()
     return True
 
 
@@ -148,18 +180,32 @@ async def morning_kb():
 
 
 async def _morning(bot: Bot):
-    if await _daily(bot, "morning_time", "last_morning_date"):
-        await notify(bot, await morning_text(), await morning_kb())
+    if not await _daily_due("morning_time", "last_morning_date"):
+        return
+    try:
+        text, markup = await morning_text(), await morning_kb()
+    except Exception:
+        log.exception("Не удалось собрать утренний план")
+        return
+    if await notify(bot, text, markup):
+        await db.set("last_morning_date", _today_str())
 
 
 async def _digest(bot: Bot):
-    if not await _daily(bot, "digest_time", "last_digest_date"):
+    if not await _daily_due("digest_time", "last_digest_date"):
         return
-    since = float(await db.get("last_digest_ts") or 0) or time.time() - 86400
-    await db.set("last_digest_ts", str(time.time()))
-    text = await build_summary(since, "время с прошлой сводки")
-    await notify(bot, "🗞 Сводка за день\n\n" + (text or "Новых сообщений не было."),
-                 chats_kb(await db.chats_since(since)) if text else None)
+    now = time.time()
+    since = float(await db.get("last_digest_ts") or 0) or now - 86400
+    try:
+        text = await build_summary(since, "время с прошлой сводки")
+    except Exception:
+        log.exception("Не удалось собрать вечернюю сводку")
+        return
+    markup = chats_kb(await db.chats_since(since)) if text else None
+    if await notify(bot, "🗞 Сводка за день\n\n" + (text or "Новых сообщений не было."),
+                    markup):
+        await db.set("last_digest_ts", str(now))
+        await db.set("last_digest_date", _today_str())
 
 
 async def end_away(bot: Bot, reason: str = "закончился"):
@@ -181,9 +227,23 @@ async def _away_end(bot: Bot):
         await end_away(bot)
 
 
+async def _retention(bot: Bot):
+    """Раз в сутки удаляем переписку старше RETENTION_DAYS (0 — не удалять)."""
+    days = config.RETENTION_DAYS
+    if days <= 0:
+        return
+    last = float(await db.get("last_cleanup_ts") or 0)
+    if time.time() - last < 86400:
+        return
+    counts = await db.cleanup(time.time() - days * 86400)
+    await db.set("last_cleanup_ts", str(time.time()))
+    if any(counts.values()):
+        log.info("Ретеншен (%s дн.): %s", days, counts)
+
+
 async def run(bot: Bot):
     while True:
-        for job in (_reminders, _away_end, _unanswered, _morning, _digest):
+        for job in (_reminders, _away_end, _unanswered, _morning, _digest, _retention):
             try:
                 await job(bot)
             except Exception:

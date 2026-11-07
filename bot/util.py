@@ -58,11 +58,14 @@ def chat_title(m: Message) -> str:
     return f"{name} (@{c.username})" if c.username else name
 
 
-async def notify(bot: Bot, text: str, kb: InlineKeyboardMarkup | None = None):
+async def notify(bot: Bot, text: str, kb: InlineKeyboardMarkup | None = None) -> bool:
+    """Отправить сообщение владельцу. False — не получилось (например, нет /start)."""
     try:
         await bot.send_message(config.OWNER_ID, text, reply_markup=kb, parse_mode=None)
+        return True
     except Exception as e:  # владелец ещё не нажал /start у бота и т.п.
         log.error("Не смог написать владельцу: %s", e)
+        return False
 
 
 def kb(*rows: list[tuple[str, str]]) -> InlineKeyboardMarkup:

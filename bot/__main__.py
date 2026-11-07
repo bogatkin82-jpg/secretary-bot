@@ -32,11 +32,15 @@ async def main():
         BotCommand(command="persona", description="Как отвечать от вашего имени"),
         BotCommand(command="help", description="Все команды"),
     ])
+    recovery_cutoff = await db.max_message_id()   # всё до этого id — из прошлого запуска
     jobs_task = asyncio.create_task(jobs.run(bot))
+    # После рестарта догоняем сообщения, которые не успели разобрать до остановки.
+    recovery_task = asyncio.create_task(business.recover(bot, recovery_cutoff))
     try:
         # Business-обновления не приходят по умолчанию — запрашиваем их явно.
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        recovery_task.cancel()
         jobs_task.cancel()
         await db.close()
         await bot.session.close()

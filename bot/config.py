@@ -77,6 +77,20 @@ MAX_AUTOREPLIES_PER_HOUR = int(os.getenv("MAX_AUTOREPLIES_PER_HOUR", "2"))
 # Сколько сообщений истории отдавать нейросети для контекста.
 HISTORY_LIMIT = int(os.getenv("HISTORY_LIMIT", "30"))
 
+# После перезапуска разбираем сообщения, которые не успели обработать до остановки.
+# Автоответы на них не отправляем — только задачи, важное и черновики на одобрение.
+RECOVERY_ENABLED = os.getenv("RECOVERY_ENABLED", "true").lower() != "false"
+RECOVERY_DELAY_SECONDS = int(os.getenv("RECOVERY_DELAY_SECONDS", "10"))
+RECOVERY_PAUSE_SECONDS = float(os.getenv("RECOVERY_PAUSE_SECONDS", "1"))
+
+# Ежедневные сообщения (план/сводка) отправляем только в это окно после заданного
+# времени; если бот запустился позже — не шлём «Доброе утро» вечером.
+DAILY_WINDOW_HOURS = float(os.getenv("DAILY_WINDOW_HOURS", "3"))
+DAILY_RETRY_MINUTES = float(os.getenv("DAILY_RETRY_MINUTES", "10"))
+
+# Сколько дней хранить переписку и служебные записи. 0 — хранить бессрочно.
+RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "365"))
+
 # Значения настроек по умолчанию (меняются командами в чате с ботом).
 DEFAULT_SETTINGS = {
     "mode": "draft",          # off | draft | auto
@@ -100,4 +114,5 @@ DEFAULT_SETTINGS = {
     "owner_name": "",
     "last_digest_date": "",
     "last_digest_ts": "0",
+    "last_cleanup_ts": "",
 }

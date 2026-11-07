@@ -59,6 +59,10 @@ STATUS_NAMES = {"vip": "⭐ важный", "ignore": "🚫 не трогать",
 async def _find_contacts(query: str):
     q = query.strip().lstrip("@").lower()
     rows = await db.all_contacts()
+    if q.lstrip("-").isdigit():          # контакт, у которого после /ignore нет имени
+        by_id = [r for r in rows if str(r["chat_id"]) == q]
+        if by_id:
+            return by_id
     exact = [r for r in rows if (r["username"] or "").lower() == q]
     if exact:
         return exact
@@ -79,6 +83,8 @@ async def _set_status(m: Message, command: CommandObject, status: str):
               f"ct:{status or 'normal'}:{r['chat_id']}")] for r in found[:10]]))
     r = found[0]
     await db.set_contact_status(r["chat_id"], status)
+    if status == "ignore":
+        await db.forget_chat(r["chat_id"])
     await m.answer(f"{r['name']} — теперь {STATUS_NAMES[status]}." + _status_hint(status))
 
 
@@ -86,7 +92,8 @@ def _status_hint(status: str) -> str:
     if status == "vip":
         return "\nЕго сообщения всегда помечаю 🔴, о неотвеченных напомню уже через час."
     if status == "ignore":
-        return "\nЕго сообщения не читаю, не храню и не отвечаю."
+        return ("\nЕго сообщения не читаю, не храню и не отвечаю. Историю, имя и @ник удалил; "
+                "вернуть можно кнопкой в /contacts.")
     return ""
 
 
@@ -110,18 +117,24 @@ async def cmd_contacts(m: Message):
     rows = [r for r in await db.all_contacts() if r["status"]]
     if not rows:
         return await m.answer("Особых контактов нет.\n/vip имя — важный, /ignore имя — не трогать.")
-    lines = [f"{STATUS_NAMES[r['status']]}: {r['name']}" + (f" @{r['username']}" if r["username"] else "")
-             for r in rows]
-    await m.answer("👥 Контакты:\n" + "\n".join(lines) + "\n\nСбросить: /normal имя")
+    lines = [f"{STATUS_NAMES[r['status']]}: {r['name'] or 'ID ' + str(r['chat_id'])}"
+             + (f" @{r['username']}" if r["username"] else "") for r in rows]
+    await m.answer("👥 Контакты:\n" + "\n".join(lines) + "\n\nВернуть в обычные — кнопкой ниже.",
+                   reply_markup=kb(*[
+                       [(f"✅ {r['name'] or 'ID ' + str(r['chat_id'])}", f"ct:normal:{r['chat_id']}")]
+                       for r in rows[:20]]))
 
 
 @router.callback_query(F.data.startswith("ct:"))
 async def cb_contact(c: CallbackQuery):
     _, action, chat_id = c.data.split(":")
     status = "" if action == "normal" else action
-    await db.set_contact_status(int(chat_id), status)
-    row = await db.contact(int(chat_id))
-    name = row["name"] if row else "Контакт"
+    chat_id = int(chat_id)
+    row = await db.contact(chat_id)
+    name = (row["name"] if row else "") or "Контакт"
+    await db.set_contact_status(chat_id, status)
+    if status == "ignore":
+        await db.forget_chat(chat_id)
     await c.message.answer(f"{name} — теперь {STATUS_NAMES[status]}." + _status_hint(status))
     await c.answer()
 

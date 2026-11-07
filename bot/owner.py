@@ -50,8 +50,8 @@ HELP = """Я ваш секретарь в Telegram.
 /done N — закрыть, /del N — удалить
 
 Контакты
-/vip имя — важный, /ignore имя — не трогать, /normal имя — обычный
-/contacts — кто важный и кого не трогать
+/vip имя — важный, /ignore имя — не трогать, /normal имя|ID — обычный
+/contacts — кто важный и кого не трогать (вернуть можно кнопкой)
 
 Сводки и напоминания
 /summary [часы] — сводка сейчас, /plan — план дня сейчас
@@ -119,12 +119,6 @@ async def cmd_start(m: Message):
     if not await _is_owner(m):
         return
     await m.answer(HELP + "\n\n" + await _status())
-
-
-@router.message(Command("settings"))
-async def cmd_settings(m: Message):
-    if await _is_owner(m):
-        await m.answer(await _status(), reply_markup=_settings_kb())
 
 
 @router.message(Command("mode"))
@@ -297,12 +291,14 @@ async def free_text(m: Message, bot: Bot):
     draft_id = _editing.pop(m.from_user.id, None)
     if draft_id:
         d = await db.get_draft(draft_id)
-        if d and d["status"] == "pending":
-            await send_reply(bot, d["conn_id"], d["chat_id"], d["chat_title"], m.text, kind="owner")
-            await db.set_draft_status(draft_id, "sent")
-            if m.text.strip() != (d["text"] or "").strip():
-                await db.add_style_example(d["text"], m.text)   # учимся на ваших правках
-            return await m.answer(f"Отправил «{d['chat_title']}» ✅")
+        if not d or d["status"] != "pending":
+            return await m.answer("Этот черновик уже неактуален — текст не отправлен и не записан "
+                                  "в задачи. Откройте актуальный черновик или /tasks.")
+        await send_reply(bot, d["conn_id"], d["chat_id"], d["chat_title"], m.text, kind="owner")
+        await db.set_draft_status(draft_id, "sent")
+        if m.text.strip() != (d["text"] or "").strip():
+            await db.add_style_example(d["text"], m.text)   # учимся на ваших правках
+        return await m.answer(f"Отправил «{d['chat_title']}» ✅")
     # 2) владелец меняет время задачи (после кнопки 🕒 или ответом на сообщение с задачей)
     task_id = _retiming.pop(m.from_user.id, None) or _task_id_from_reply(m)
     if task_id:
@@ -413,3 +409,10 @@ async def cb_task(c: CallbackQuery):
         await db.set_task(t["id"], due_ts=due, reminded=0)
         await c.message.edit_text(c.message.text + f"\n\n⏰ Напомню {fmt_ts(due)}")
     await c.answer()
+
+
+@router.message(F.text.startswith("/"))
+async def unknown_command(m: Message):
+    if not await _is_owner(m):
+        return
+    await m.answer("Не знаю такую команду 🤔 Список команд: /help")
