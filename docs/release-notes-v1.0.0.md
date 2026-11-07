@@ -51,7 +51,7 @@ sudo chown -R 10001:10001 data
 docker compose up -d --build
 ```
 
-Подробности: [README.md](../README.md) · [English README](../README.en.md).
+Подробности: [README.md](https://github.com/bogatkin82-jpg/secretary-bot/blob/main/README.md) · [English README](https://github.com/bogatkin82-jpg/secretary-bot/blob/main/README.en.md).
 
 ## Ограничения
 
