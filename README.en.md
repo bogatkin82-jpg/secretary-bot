@@ -9,6 +9,7 @@
 ![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)
 ![Telegram Business](https://img.shields.io/badge/Telegram-Business-26A5E4?logo=telegram&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![Release](https://img.shields.io/github/v/release/bogatkin82-jpg/secretary-bot?label=release)
 
 [Русский](README.md) · **English**
 
