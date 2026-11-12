@@ -57,6 +57,7 @@ The bot is **single-user**: it only accepts the owner whose `OWNER_ID` is set in
 ### Chat intelligence
 - **Importance filter.** Every batch gets `low` / `normal` / `high`; urgent messages arrive with 🔴.
 - **Tasks.** Requests and promises are extracted with deadlines and reminders.
+- **Continuation-aware.** If a new message develops an open task, the bot updates it instead of creating a duplicate.
 - **Meetings.** Explicit date/time agreements become events with an “📅 Add to calendar” button.
 - **Birthdays.** Dates from chats and Telegram profiles; reminders the day before and on the day.
 - **Voice messages and video notes.** Transcribed through GigaChat and included in tasks and summaries.

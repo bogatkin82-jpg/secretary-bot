@@ -69,6 +69,38 @@ class PromptGuardTest(unittest.IsolatedAsyncioTestCase):
     async def test_safe_label(self):
         self.assertEqual(ai._safe_label("a\n<b>\x00c", 20), "a b c")
 
+    def test_normalize_tasks_keeps_id(self):
+        tasks = ai._normalize_tasks([
+            {"id": "12", "text": "Проверить парковку", "due": None},
+            {"text": "Купить хлеб"},
+        ])
+        self.assertEqual(tasks[0]["id"], 12)
+        self.assertIsNone(tasks[1]["id"])
+
+    async def test_analyze_gets_open_task_ids(self):
+        captured = {}
+
+        async def fake_ask_json(system, user, model, max_tokens=1024):
+            captured["system"] = system
+            return {"importance": "low", "summary": "", "tasks": [], "events": [],
+                    "birthdays": [], "reply": None}
+
+        original = ai._ask_json
+        ai._ask_json = fake_ask_json
+        try:
+            await ai.analyze_chat(
+                chat_title="Максим", history_rows=[{"id": 1, "ts": 1700000000,
+                                                   "from_owner": 0, "text": "поехали на парковку"}],
+                new_ids={1}, want_reply=False, persona="", owner_name="Владелец",
+                open_tasks=[{"id": 12, "chat_id": 5, "chat_title": "Максим",
+                             "text": "Проверить парковку", "done": 0}],
+            )
+        finally:
+            ai._ask_json = original
+
+        self.assertIn("id=12", captured["system"])
+        self.assertIn("верни её id", captured["system"])
+
 
 if __name__ == "__main__":
     unittest.main()

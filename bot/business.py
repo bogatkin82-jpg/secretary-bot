@@ -7,6 +7,7 @@ from aiogram import Bot, Router
 from aiogram.types import BusinessConnection, BusinessMessagesDeleted, Message
 
 from . import ai, config, skills, state, voice
+from .task_match import find_open_task
 from .db import db
 from .util import (chat_title, contact_kb, draft_kb, event_kb, fmt_ts, message_text, notify,
                    task_kb)
@@ -260,6 +261,7 @@ async def process_chat(chat_id: int, conn_id: str, bot: Bot, recovery: bool = Fa
         if template:
             want_reply = False          # нейросеть ответ не сочиняет — отвечаем шаблоном
 
+    open_tasks = [t for t in await db.open_tasks() if t["chat_id"] == chat_id]
     result = await ai.analyze_chat(
         chat_title=title,
         history_rows=await db.history(chat_id, config.HISTORY_LIMIT),
@@ -267,7 +269,7 @@ async def process_chat(chat_id: int, conn_id: str, bot: Bot, recovery: bool = Fa
         want_reply=want_reply,
         persona=await db.get("persona"),
         owner_name=await db.get("owner_name"),
-        open_tasks=[t["text"] for t in await db.open_tasks()],
+        open_tasks=open_tasks,
         facts=[f["text"] for f in await db.facts()],
         style=await db.style_examples(),
         owner_samples=await db.owner_samples(chat_id),
@@ -279,10 +281,28 @@ async def process_chat(chat_id: int, conn_id: str, bot: Bot, recovery: bool = Fa
     await db.mark_processed([r["id"] for r in new_rows], importance)
     log.info("Чат %s: %s", title, result)
 
-    # 1) задачи
+    # 1) задачи: продолжаем уже открытую задачу, если модель вернула её id
+    #    (или если текст совпал с существующей задачей этого чата).
+    updated_tasks: set[int] = set()
     for t in result["tasks"]:
         due = ai.parse_due(t.get("due"))
+        old = find_open_task(open_tasks, chat_id, t["text"], t.get("id"))
+        if old is not None:
+            fields = {"text": t["text"]}
+            due_changed = due is not None and due != old["due_ts"]
+            if due_changed:
+                fields["due_ts"] = due
+                fields["reminded"] = 0
+            await db.set_task(old["id"], **fields)
+            if due_changed and old["id"] not in updated_tasks:
+                updated_tasks.add(old["id"])
+                await notify(bot, f"🔁 Задача обновлена из чата «{title}»:\n{t['text']}\n"
+                                  f"🕒 {fmt_ts(due)}", task_kb(old["id"]))
+            continue
+
         task_id = await db.add_task(chat_id, title, t["text"], due)
+        open_tasks.append({"id": task_id, "chat_id": chat_id, "chat_title": title,
+                           "text": t["text"], "due_ts": due, "done": 0})
         await notify(bot, f"📝 Задача из чата «{title}»:\n{t['text']}\n🕒 {fmt_ts(due)}", task_kb(task_id))
 
     # 2) встречи — только настоящие договорённости (модели любят выдумывать время)
