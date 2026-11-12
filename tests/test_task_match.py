@@ -1,6 +1,6 @@
 import unittest
 
-from bot.task_match import find_open_task, normalize_text
+from bot.task_match import find_open_task, group_similar_tasks, normalize_text
 
 
 class TaskMatchTest(unittest.TestCase):
@@ -36,6 +36,24 @@ class TaskMatchTest(unittest.TestCase):
 
     def test_done_is_ignored(self):
         self.assertIsNone(find_open_task(self.tasks, 5, "старая задача"))
+
+    def test_group_similar_tasks(self):
+        tasks = [
+            {"id": 1, "chat_id": 5, "text": "Проверить парковку", "done": 0},
+            {"id": 2, "chat_id": 5, "text": "Проверить парковку на планке", "done": 0},
+            {"id": 3, "chat_id": 5, "text": "Купить хлеб", "done": 0},
+            {"id": 4, "chat_id": 6, "text": "Проверить парковку", "done": 0},
+        ]
+        groups = group_similar_tasks(tasks)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual({t["id"] for t in groups[0]}, {1, 2})
+
+    def test_group_ignores_done(self):
+        tasks = [
+            {"id": 1, "chat_id": 5, "text": "Проверить парковку", "done": 1},
+            {"id": 2, "chat_id": 5, "text": "Проверить парковку", "done": 0},
+        ]
+        self.assertEqual(group_similar_tasks(tasks), [])
 
 
 if __name__ == "__main__":

@@ -75,3 +75,38 @@ def find_open_task(tasks, chat_id: int, text: str, task_id=None):
         return None
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[0][1]
+
+def group_similar_tasks(tasks) -> list[list]:
+    """Сгруппировать похожие открытые задачи внутри одного чата.
+
+    Возвращает только группы из двух и более задач. Ничего не меняет.
+    Группировка транзитивная: A~B и B~C попадут в одну группу.
+    """
+    tasks = list(tasks)
+    parent = list(range(len(tasks)))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = root(i), root(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i, first in enumerate(tasks):
+        for j in range(i + 1, len(tasks)):
+            second = tasks[j]
+            if _as_int(_get(first, "chat_id")) != _as_int(_get(second, "chat_id")):
+                continue
+            if not _is_open(first) or not _is_open(second):
+                continue
+            if find_open_task([first], _get(second, "chat_id"), _get(second, "text", "")) is first:
+                union(i, j)
+
+    groups: dict[int, list] = {}
+    for i, task in enumerate(tasks):
+        groups.setdefault(root(i), []).append(task)
+    return [group for group in groups.values() if len(group) > 1]
